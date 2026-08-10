@@ -1,0 +1,14 @@
+{
+  "name": "Finanças — Painel Pessoal",
+  "short_name": "Finanças",
+  "description": "Painel financeiro pessoal offline — receitas, despesas, orçamento, metas e cartões.",
+  "start_url": "./financas-painel-pessoal.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#14171B",
+  "theme_color": "#F59E0B",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
