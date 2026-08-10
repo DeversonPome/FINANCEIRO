@@ -1,6 +1,6 @@
 const CACHE_NAME = 'financas-cache-v1';
 const CORE_ASSETS = [
-  './financas-painel-pessoal.html',
+  './index.html',
   './manifest.json',
   './icon.svg'
 ];
