@@ -1,4 +1,4 @@
-const CACHE_NAME = 'financas-cache-v1';
+const CACHE_NAME = 'financas-cache-v2';
 const CORE_ASSETS = [
   './index.html',
   './manifest.json',
@@ -21,19 +21,10 @@ self.addEventListener('activate', (event) => {
   self.clients.claim();
 });
 
-// Cache-first para o essencial; network-first (com fallback pro cache) para o resto (ex: fontes/CDN)
+// Network-first: sempre busca a versão mais nova primeiro; só usa o cache
+// se estiver offline. Evita ficar preso numa versão antiga do app.
 self.addEventListener('fetch', (event) => {
   if(event.request.method !== 'GET') return;
-  const url = new URL(event.request.url);
-  const isCore = CORE_ASSETS.some(a => url.pathname.endsWith(a.replace('./','/')));
-
-  if(isCore){
-    event.respondWith(
-      caches.match(event.request).then(cached => cached || fetch(event.request))
-    );
-    return;
-  }
-
   event.respondWith(
     fetch(event.request)
       .then(resp => {
