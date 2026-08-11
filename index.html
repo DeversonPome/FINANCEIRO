@@ -2207,3 +2207,491 @@ function parseCSV(text){
 function guessColumns(header){
   const norm = header.map(h=>h.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''));
   const find = (...keys) => norm.findIndex(h=>keys.some(k=>h.includes(k)));
+  return {
+    data: find('data','date'),
+    desc: find('descr','histor','memo','titulo'),
+    valor: find('valor','amount','montante')
+  };
+}
+
+function parseValorBR(raw){
+  if(raw==null) return NaN;
+  let s = String(raw).trim().replace(/[R$\s]/g,'');
+  // se tem vírgula como separador decimal
+  if(s.includes(',') && s.includes('.')){
+    s = s.replace(/\./g,'').replace(',','.');
+  } else if(s.includes(',')){
+    s = s.replace(',','.');
+  }
+  return parseFloat(s);
+}
+function parseDataBR(raw){
+  if(!raw) return null;
+  const s = raw.trim();
+  // já ISO
+  if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+  // dd/mm/aaaa ou dd-mm-aaaa
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
+  if(m){
+    let [,d,mo,y] = m;
+    if(y.length===2) y = '20'+y;
+    return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
+  }
+  return null;
+}
+
+function handleImportFile(ev){
+  const file = ev.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    const text = e.target.result;
+    const rows = parseCSV(text);
+    if(rows.length<2){ toast('Arquivo vazio ou inválido','⚠️'); return; }
+    const header = rows[0];
+    const cols = guessColumns(header);
+    if(cols.data<0 || cols.desc<0 || cols.valor<0){
+      document.getElementById('importPreviewWrap').innerHTML = `<div class="empty"><div class="ic">⚠️</div><div class="t">Não consegui identificar as colunas</div><div class="s">Verifique se o CSV tem colunas de data, descrição e valor</div></div>`;
+      return;
+    }
+    const parsed = rows.slice(1).map(r=>{
+      const data = parseDataBR(r[cols.data]);
+      const desc = r[cols.desc]||'(sem descrição)';
+      const valor = parseValorBR(r[cols.valor]);
+      return {data, desc, valor};
+    }).filter(r=>r.data && !isNaN(r.valor) && r.valor!==0);
+
+    IMPORT_ROWS = parsed;
+    renderImportPreview();
+  };
+  reader.readAsText(file, 'ISO-8859-1');
+}
+
+function renderImportPreview(){
+  const wrap = document.getElementById('importPreviewWrap');
+  const btn = document.getElementById('importConfirmBtn');
+  if(!IMPORT_ROWS.length){
+    wrap.innerHTML = `<div class="empty"><div class="ic">📭</div><div class="t">Nenhum lançamento reconhecido</div></div>`;
+    btn.disabled = true;
+    return;
+  }
+  const receitas = IMPORT_ROWS.filter(r=>r.valor>0).length;
+  const despesas = IMPORT_ROWS.filter(r=>r.valor<0).length;
+  wrap.innerHTML = `
+    <div class="card" style="background:var(--graphite-3); margin:10px 0;">
+      <div style="font-size:12.5px; color:var(--ink-dim); margin-bottom:8px;"><strong>${IMPORT_ROWS.length}</strong> lançamentos encontrados — ${receitas} receita(s), ${despesas} despesa(s)</div>
+      <div style="max-height:220px; overflow-y:auto;">
+        ${IMPORT_ROWS.slice(0,50).map(r=>`
+          <div style="display:flex; justify-content:space-between; gap:8px; padding:5px 0; border-bottom:1px solid var(--graphite-4); font-size:11.5px;">
+            <span style="color:var(--ink-faint); flex-shrink:0;">${fmtDate(r.data)}</span>
+            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHTML(r.desc)}</span>
+            <span style="font-family:'JetBrains Mono',monospace; color:${r.valor>=0?'var(--green)':'var(--red)'}; flex-shrink:0;">${fmtBRL(r.valor)}</span>
+          </div>
+        `).join('')}
+      </div>
+      ${IMPORT_ROWS.length>50?`<div style="font-size:11px; color:var(--ink-faint); margin-top:6px;">mostrando 50 de ${IMPORT_ROWS.length}</div>`:''}
+    </div>
+  `;
+  btn.disabled = false;
+}
+
+function confirmImport(){
+  const contaId = document.getElementById('importConta').value;
+  if(!contaId || !IMPORT_ROWS.length) return;
+  const catDespesaPadrao = DATA.categories.find(c=>c.tipo==='despesa' && c.nome==='Outros') || DATA.categories.find(c=>c.tipo==='despesa');
+  const catReceitaPadrao = DATA.categories.find(c=>c.tipo==='receita' && c.nome==='Outros') || DATA.categories.find(c=>c.tipo==='receita');
+  let count = 0;
+  IMPORT_ROWS.forEach(r=>{
+    const isIncome = r.valor>0;
+    DATA.transactions.push({
+      id: uid(), descricao: r.desc, valor: Math.abs(r.valor), data: r.data,
+      tipo: isIncome?'receita':'despesa',
+      categoriaId: isIncome ? (catReceitaPadrao?catReceitaPadrao.id:'') : (catDespesaPadrao?catDespesaPadrao.id:''),
+      contaId, status:'pago', recorrente:false, frequencia:null, criadoEm:Date.now()
+    });
+    count++;
+  });
+  saveData();
+  closeModal();
+  toast(`${count} lançamentos importados`,'✅');
+  renderPage(CURRENT_PAGE);
+}
+
+
+
+/* =========================================================
+   PWA — Service Worker + prompt de instalação
+   ========================================================= */
+let DEFERRED_INSTALL_PROMPT = null;
+
+if('serviceWorker' in navigator && location.protocol!=='file:'){
+  window.addEventListener('load', ()=>{
+    navigator.serviceWorker.register('sw.js').catch(()=>{ /* silencioso: funciona normalmente sem SW */ });
+  });
+}
+
+window.addEventListener('beforeinstallprompt', (e)=>{
+  e.preventDefault();
+  DEFERRED_INSTALL_PROMPT = e;
+  const btn = document.getElementById('pwaInstallBtn');
+  if(btn) btn.style.display = '';
+});
+
+function triggerInstallPrompt(){
+  if(!DEFERRED_INSTALL_PROMPT){
+    toast('Use o menu do navegador → "Adicionar à tela inicial"','📲');
+    return;
+  }
+  DEFERRED_INSTALL_PROMPT.prompt();
+  DEFERRED_INSTALL_PROMPT.userChoice.finally(()=>{ DEFERRED_INSTALL_PROMPT = null; });
+}
+
+
+/* =========================================================
+   PÁGINA: DÍVIDAS
+   ========================================================= */
+function renderDividas(){
+  const ativas = DATA.debts.filter(d=>d.status==='ativa');
+  const paradas = DATA.debts.filter(d=>d.status==='parada');
+  const quitadas = DATA.debts.filter(d=>d.status==='quitada');
+  const totalAberto = totalDividasAbertas();
+  const totalJaPago = DATA.debts.reduce((s,d)=>s+Number(d.valorPago||0),0);
+  const upcoming = upcomingDebts(30);
+
+  const cardHTML = d => {
+    const saldo = debtSaldoDevedor(d);
+    const pct = debtProgress(d);
+    const venc = nextDebtDueDate(d);
+    const quitada = d.status==='quitada';
+    const parada = d.status==='parada';
+    return `
+      <div class="goal-card" style="${quitada?'opacity:.55;':''}">
+        <div class="top">
+          <div>
+            <h4>${quitada?'✅':(parada?'⏸️':'📉')} ${escapeHTML(d.nome)}</h4>
+            <div class="prazo">${d.credor?escapeHTML(d.credor)+' · ':''}${d.parcelasTotal?`parcela ${Math.min(d.parcelasPagas||0, d.parcelasTotal)}/${d.parcelasTotal}`:''}</div>
+          </div>
+          <div style="display:flex; gap:4px;">
+            <button class="btn btn-icon btn-ghost btn-sm" onclick="openDebtModal('${d.id}')">✎</button>
+            <button class="btn btn-icon btn-danger btn-sm" onclick="deleteDebt('${d.id}')">✕</button>
+          </div>
+        </div>
+        ${parada ? `<div class="tx-status" style="background:rgba(245,158,11,.15); color:var(--amber); display:inline-block; margin-top:6px;">Parada / em negociação</div>` : ''}
+        <div class="pbar"><div class="pbar-fill" style="width:${pct}%; background:${quitada?'var(--green)':(parada?'var(--amber)':'var(--red)')}"></div></div>
+        <div class="nums">
+          <span class="a">${fmtBRL(saldo)} <span style="color:var(--ink-faint); font-weight:500;">restante</span></span>
+          <span class="b">de ${fmtBRL(d.valorTotal)} (${pct.toFixed(0)}% pago)</span>
+        </div>
+        ${!quitada && !parada && venc ? `<div style="font-size:11.5px; color:var(--ink-faint); margin-top:8px;">Próxima parcela: ${fmtDate(venc)}${d.valorParcela?' · '+fmtBRL(d.valorParcela):''}</div>` : ''}
+        ${d.observacoes ? `<div style="font-size:11.5px; color:var(--ink-faint); margin-top:6px; font-style:italic;">"${escapeHTML(d.observacoes)}"</div>` : ''}
+        ${!quitada ? `<button class="btn btn-sm btn-primary" style="width:100%; justify-content:center; margin-top:12px;" onclick="openDebtPaymentModal('${d.id}')">💸 Registrar pagamento</button>` : ''}
+      </div>
+    `;
+  };
+
+  return `
+    <div class="page-head">
+      <div><h1>Dívidas</h1><div class="sub">Empréstimos, financiamentos, parcelamentos e contas paradas</div></div>
+      <button class="btn btn-primary" onclick="openDebtModal()">+ Nova dívida</button>
+    </div>
+
+    <div class="grid grid-3" style="margin-bottom:18px;">
+      <div class="card kpi expense">
+        <div class="card-title">Total em aberto</div>
+        <div class="amt">${fmtBRL(totalAberto)}</div>
+        <div class="delta">${ativas.length} ativa${ativas.length===1?'':'s'} · ${paradas.length} parada${paradas.length===1?'':'s'}</div>
+      </div>
+      <div class="card kpi">
+        <div class="card-title">Já pago (acumulado)</div>
+        <div class="amt" style="color:var(--green)">${fmtBRL(totalJaPago)}</div>
+      </div>
+      <div class="card kpi">
+        <div class="card-title">Quitadas</div>
+        <div class="amt">${quitadas.length}</div>
+      </div>
+    </div>
+
+    ${upcoming.length ? `
+      <div class="card" style="margin-bottom:18px;">
+        <div class="card-title">Próximos vencimentos (30 dias)</div>
+        ${upcoming.map(u=>{
+          const d = u.debt;
+          const dt = new Date(u.vencimento+'T00:00:00');
+          const today = new Date(); today.setHours(0,0,0,0);
+          const diff = Math.round((dt-today)/86400000);
+          const urgent = diff<=3;
+          return `
+            <div class="bill-row" style="cursor:pointer" onclick="openDebtPaymentModal('${d.id}')">
+              <div class="bill-days" style="${urgent?'background:rgba(239,68,68,.15)':''}">
+                <div class="n" style="${urgent?'color:var(--red)':''}">${diff<0?'0':diff}</div>
+                <div class="l">dias</div>
+              </div>
+              <div style="flex:1; min-width:0;">
+                <div class="desc" style="font-size:13.5px; font-weight:600;">${escapeHTML(d.nome)}</div>
+                <div class="meta" style="font-size:11.5px; color:var(--ink-faint);">vence ${fmtDate(u.vencimento)}</div>
+              </div>
+              <div class="tx-val neg">${d.valorParcela?fmtBRL(d.valorParcela):''}</div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    ` : ''}
+
+    <div class="grid grid-3" style="margin-bottom:8px;">
+      ${ativas.length ? ativas.map(cardHTML).join('') : `<div class="empty" style="grid-column:1/-1"><div class="ic">🎉</div><div class="t">Nenhuma dívida ativa</div></div>`}
+    </div>
+
+    ${paradas.length ? `
+      <div style="margin-top:22px;">
+        <div class="card-title" style="margin-bottom:10px;">⏸️ Paradas / aguardando negociação</div>
+        <div class="grid grid-3">${paradas.map(cardHTML).join('')}</div>
+      </div>
+    ` : ''}
+
+    ${quitadas.length ? `
+      <div style="margin-top:22px;">
+        <div class="card-title" style="margin-bottom:10px;">Quitadas</div>
+        <div class="grid grid-3">${quitadas.map(cardHTML).join('')}</div>
+      </div>
+    ` : ''}
+  `;
+}
+
+/* ---------------- MODAL: NOVA/EDITAR DÍVIDA ---------------- */
+function openDebtModal(id){
+  const d = id ? DATA.debts.find(x=>x.id===id) : null;
+  const html = `
+    <div class="modal-head"><h3>${d?'Editar dívida':'Nova dívida'}</h3><button class="btn btn-icon btn-ghost" onclick="closeModal()">✕</button></div>
+    <div class="field">
+      <label>Nome</label>
+      <input type="text" id="debtNome" placeholder="Ex: Financiamento do carro, Empréstimo pessoal..." value="${d?escapeAttr(d.nome):''}">
+    </div>
+    <div class="field">
+      <label>Credor (opcional)</label>
+      <input type="text" id="debtCredor" placeholder="Ex: Banco, Loja, Pessoa..." value="${d?escapeAttr(d.credor||''):''}">
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Valor total da dívida (R$)</label><input type="number" step="0.01" id="debtValorTotal" value="${d?d.valorTotal:''}"></div>
+      <div class="field"><label>Já pago até agora (R$)</label><input type="number" step="0.01" id="debtValorPago" value="${d?d.valorPago||0:'0'}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Nº de parcelas (opcional)</label><input type="number" min="1" id="debtParcelasTotal" value="${d?d.parcelasTotal||'':''}"></div>
+      <div class="field"><label>Parcelas já pagas</label><input type="number" min="0" id="debtParcelasPagas" value="${d?d.parcelasPagas||0:'0'}"></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label>Valor da parcela (opcional)</label><input type="number" step="0.01" id="debtValorParcela" value="${d?d.valorParcela||'':''}"></div>
+      <div class="field"><label>Dia de vencimento</label><input type="number" min="1" max="31" id="debtDiaVencimento" value="${d?d.diaVencimento||'':''}"></div>
+    </div>
+    <div class="field">
+      <label>Taxa de juros a.m. % (opcional, informativo)</label>
+      <input type="number" step="0.01" id="debtTaxaJuros" value="${d?d.taxaJuros||'':''}">
+    </div>
+    <div class="field">
+      <label>Observações (opcional)</label>
+      <textarea id="debtObservacoes" rows="2" placeholder="Ex: aguardando retorno do credor, negociando desconto...">${d?escapeHTML(d.observacoes||''):''}</textarea>
+    </div>
+    <div class="field">
+      <label>Status</label>
+      <select id="debtStatus">
+        <option value="ativa" ${!d||d.status==='ativa'?'selected':''}>Ativa (estou pagando)</option>
+        <option value="parada" ${d&&d.status==='parada'?'selected':''}>Parada — não estou pagando ainda / em negociação</option>
+        <option value="quitada" ${d&&d.status==='quitada'?'selected':''}>Quitada</option>
+      </select>
+    </div>
+    <div class="modal-actions">
+      ${d?`<button class="btn btn-danger" onclick="deleteDebt('${d.id}')">Excluir</button>`:''}
+      <button class="btn btn-primary" onclick="saveDebt('${d?d.id:''}')">Salvar</button>
+    </div>
+  `;
+  openModalRaw(html);
+}
+
+function saveDebt(id){
+  const nome = document.getElementById('debtNome').value.trim();
+  const credor = document.getElementById('debtCredor').value.trim();
+  const valorTotal = parseFloat(document.getElementById('debtValorTotal').value);
+  const valorPago = parseFloat(document.getElementById('debtValorPago').value)||0;
+  const parcelasTotal = parseInt(document.getElementById('debtParcelasTotal').value)||null;
+  const parcelasPagas = parseInt(document.getElementById('debtParcelasPagas').value)||0;
+  const valorParcela = parseFloat(document.getElementById('debtValorParcela').value)||null;
+  const diaVencimento = parseInt(document.getElementById('debtDiaVencimento').value)||null;
+  const taxaJuros = parseFloat(document.getElementById('debtTaxaJuros').value)||null;
+  const observacoes = document.getElementById('debtObservacoes').value.trim();
+  let status = document.getElementById('debtStatus').value;
+
+  if(!nome){ toast('Informe um nome','⚠️'); return; }
+  if(!valorTotal || valorTotal<=0){ toast('Informe o valor total da dívida','⚠️'); return; }
+  if(valorPago >= valorTotal) status = 'quitada';
+
+  const payload = {nome, credor, valorTotal, valorPago, parcelasTotal, parcelasPagas, valorParcela, diaVencimento, taxaJuros, observacoes, status};
+  if(id){
+    Object.assign(DATA.debts.find(x=>x.id===id), payload);
+    toast('Dívida atualizada','✅');
+  } else {
+    DATA.debts.push({id:uid(), ...payload, criadoEm:Date.now()});
+    toast('Dívida cadastrada','✅');
+  }
+  saveData();
+  closeModal();
+  renderPage('dividas');
+}
+
+function deleteDebt(id){
+  if(!confirm('Excluir esta dívida? O histórico de pagamentos já registrados como transações não será apagado.')) return;
+  DATA.debts = DATA.debts.filter(d=>d.id!==id);
+  saveData();
+  closeModal();
+  toast('Dívida excluída','🗑');
+  renderPage('dividas');
+}
+
+/* ---------------- MODAL: REGISTRAR PAGAMENTO ---------------- */
+function openDebtPaymentModal(id){
+  const d = DATA.debts.find(x=>x.id===id);
+  if(!d) return;
+  const saldo = debtSaldoDevedor(d);
+  const accOpts = DATA.accounts.filter(a=>a.tipo!=='cartao').map(a=>`<option value="${a.id}">${a.nome}</option>`).join('') || DATA.accounts.map(a=>`<option value="${a.id}">${a.nome}</option>`).join('');
+  const sugestao = d.valorParcela && d.valorParcela<=saldo ? d.valorParcela : saldo;
+  const html = `
+    <div class="modal-head"><h3>Pagamento — ${escapeHTML(d.nome)}</h3><button class="btn btn-icon btn-ghost" onclick="closeModal()">✕</button></div>
+    <p style="font-size:12px; color:var(--ink-dim); margin-bottom:14px;">Saldo devedor atual: <strong style="color:var(--ink)">${fmtBRL(saldo)}</strong>. Isso vai criar uma despesa na conta escolhida e reduzir o saldo da dívida.</p>
+    <div class="field-row">
+      <div class="field"><label>Valor pago (R$)</label><input type="number" step="0.01" id="debtPagValor" value="${sugestao.toFixed(2)}"></div>
+      <div class="field"><label>Data</label><input type="date" id="debtPagData" value="${todayISO()}"></div>
+    </div>
+    <div class="field">
+      <label>Conta de saída</label>
+      <select id="debtPagConta">${accOpts}</select>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" onclick="confirmDebtPayment('${d.id}')">Confirmar pagamento</button>
+    </div>
+  `;
+  openModalRaw(html);
+}
+
+function confirmDebtPayment(id){
+  const d = DATA.debts.find(x=>x.id===id);
+  if(!d) return;
+  const valor = parseFloat(document.getElementById('debtPagValor').value);
+  const data = document.getElementById('debtPagData').value;
+  const contaId = document.getElementById('debtPagConta').value;
+  if(!valor || valor<=0){ toast('Informe um valor válido','⚠️'); return; }
+  if(!data){ toast('Informe a data','⚠️'); return; }
+  if(!contaId){ toast('Selecione uma conta','⚠️'); return; }
+
+  const catDividas = DATA.categories.find(c=>c.tipo==='despesa' && c.nome==='Dívidas') || DATA.categories.find(c=>c.tipo==='despesa');
+  DATA.transactions.push({
+    id: uid(), descricao:`Pagamento: ${d.nome}`, valor, data, tipo:'despesa',
+    categoriaId: catDividas.id, contaId, status:'pago', recorrente:false, frequencia:null, criadoEm:Date.now()
+  });
+
+  d.valorPago = Number(d.valorPago||0) + valor;
+  if(d.parcelasTotal) d.parcelasPagas = Math.min(d.parcelasTotal, (d.parcelasPagas||0)+1);
+  if(d.valorPago >= d.valorTotal) d.status = 'quitada';
+
+  saveData();
+  closeModal();
+  toast(d.status==='quitada' ? 'Dívida quitada! 🎉' : 'Pagamento registrado','✅');
+  renderPage('dividas');
+}
+
+
+
+/* =========================================================
+   PERFIS — trocar, criar, renomear, excluir
+   ========================================================= */
+function openProfileModal(){
+  const profiles = getProfiles();
+  const activeId = getActiveProfileId();
+  const html = `
+    <div class="modal-head"><h3>Perfis</h3><button class="btn btn-icon btn-ghost" onclick="closeModal()">✕</button></div>
+    <p style="font-size:12px; color:var(--ink-dim); line-height:1.5; margin-bottom:14px;">
+      Cada perfil tem contas, transações e dívidas totalmente separadas — útil se mais de uma pessoa usa este mesmo aparelho/navegador.
+    </p>
+    <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:14px;">
+      ${profiles.map(p=>`
+        <div class="profile-row ${p.id===activeId?'current':''}" onclick="${p.id===activeId?'':`switchProfile('${p.id}')`}">
+          <div class="profile-avatar" style="background:${p.cor}">${p.nome.charAt(0).toUpperCase()}</div>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:13.5px; font-weight:700;">${escapeHTML(p.nome)} ${p.id===activeId?'<span style="color:var(--amber); font-weight:600; font-size:11px;">· ativo</span>':''}</div>
+          </div>
+          <button class="btn btn-icon btn-ghost btn-sm" onclick="event.stopPropagation(); openRenameProfileModal('${p.id}')">✎</button>
+          ${profiles.length>1?`<button class="btn btn-icon btn-danger btn-sm" onclick="event.stopPropagation(); confirmDeleteProfile('${p.id}')">✕</button>`:''}
+        </div>
+      `).join('')}
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-primary" style="width:100%;" onclick="openNewProfileModal()">+ Novo perfil</button>
+    </div>
+  `;
+  openModalRaw(html);
+}
+
+function openNewProfileModal(){
+  const html = `
+    <div class="modal-head"><h3>Novo perfil</h3><button class="btn btn-icon btn-ghost" onclick="closeModal()">✕</button></div>
+    <div class="field">
+      <label>Nome da pessoa</label>
+      <input type="text" id="newProfileNome" placeholder="Ex: Ana, Trabalho, Pessoal...">
+    </div>
+    <p style="font-size:11.5px; color:var(--ink-faint); margin-bottom:10px;">O perfil começa vazio, com as categorias e contas padrão.</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="openProfileModal()">Voltar</button>
+      <button class="btn btn-primary" onclick="confirmNewProfile()">Criar</button>
+    </div>
+  `;
+  openModalRaw(html);
+}
+function confirmNewProfile(){
+  const nome = document.getElementById('newProfileNome').value.trim();
+  if(!nome){ toast('Informe um nome','⚠️'); return; }
+  const p = createProfile(nome);
+  toast(`Perfil "${nome}" criado`,'✅');
+  switchProfile(p.id);
+}
+
+function openRenameProfileModal(id){
+  const p = getProfiles().find(x=>x.id===id);
+  if(!p) return;
+  const html = `
+    <div class="modal-head"><h3>Renomear perfil</h3><button class="btn btn-icon btn-ghost" onclick="closeModal()">✕</button></div>
+    <div class="field">
+      <label>Nome</label>
+      <input type="text" id="renameProfileNome" value="${escapeAttr(p.nome)}">
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="openProfileModal()">Voltar</button>
+      <button class="btn btn-primary" onclick="confirmRenameProfile('${id}')">Salvar</button>
+    </div>
+  `;
+  openModalRaw(html);
+}
+function confirmRenameProfile(id){
+  const nome = document.getElementById('renameProfileNome').value.trim();
+  if(!nome){ toast('Informe um nome','⚠️'); return; }
+  renameProfile(id, nome);
+  toast('Perfil renomeado','✅');
+  if(id===getActiveProfileId()){
+    location.reload();
+  } else {
+    openProfileModal();
+  }
+}
+
+function confirmDeleteProfile(id){
+  const p = getProfiles().find(x=>x.id===id);
+  if(!p) return;
+  if(!confirm(`Excluir o perfil "${p.nome}"? Todos os dados dele (transações, contas, dívidas, metas) serão apagados permanentemente.`)) return;
+  if(!confirm('Última confirmação: apagar esse perfil e todos os dados dele?')) return;
+  const wasActive = id===getActiveProfileId();
+  deleteProfile(id);
+  toast('Perfil excluído','🗑');
+  if(wasActive){ location.reload(); } else { openProfileModal(); }
+}
+
+
+
+</script>
+</body>
+</html>
