@@ -92,6 +92,25 @@ h1,h2,h3,.display{font-family:'Bebas Neue',sans-serif; letter-spacing:0.04em; fo
   padding:14px; border-top:1px solid var(--line);
   display:flex; flex-direction:column; gap:8px;
 }
+.profile-switch{
+  display:flex; align-items:center; gap:10px; padding:12px 16px;
+  border-bottom:1px solid var(--line); cursor:pointer;
+  transition:background .15s;
+}
+.profile-switch:hover{ background:var(--graphite-3); }
+.profile-avatar{
+  width:32px; height:32px; border-radius:9px; flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+  font-family:'Bebas Neue',sans-serif; font-size:15px; color:#14171B;
+}
+.profile-name{ font-size:13px; font-weight:700; color:var(--ink); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.profile-hint{ font-size:10px; color:var(--ink-faint); text-transform:uppercase; letter-spacing:.04em; }
+.profile-row{
+  display:flex; align-items:center; gap:11px; padding:11px 8px;
+  border-radius:10px; cursor:pointer; border:1px solid transparent;
+}
+.profile-row:hover{ background:var(--graphite-3); }
+.profile-row.current{ border-color:var(--amber); background:rgba(245,158,11,.06); }
 .saldo-mini{padding:10px 12px; background:var(--graphite-3); border-radius:var(--radius-sm); border:1px solid var(--line);}
 .saldo-mini .lbl{font-size:10px; text-transform:uppercase; letter-spacing:.06em; color:var(--ink-faint);}
 .saldo-mini .val{font-family:'JetBrains Mono',monospace; font-size:16px; font-weight:700; margin-top:2px;}
@@ -300,14 +319,85 @@ select, input, textarea{width:100%;}
 <script>
 /* =========================================================
    FINANÇAS — Painel Pessoal
-   Camada de dados (localStorage) + utilitários
+   Camada de dados (localStorage) + utilitários + perfis
    ========================================================= */
-const DB_KEY = 'financas_pessoal_v1';
+const DB_KEY_LEGACY = 'financas_pessoal_v1';
+const PROFILES_KEY = 'financas_perfis_v1';
+const ACTIVE_PROFILE_KEY = 'financas_perfil_ativo_v1';
+const PROFILE_COLORS = ['#F59E0B','#3B82F6','#22C55E','#A855F7','#EC4899','#14B8A6'];
 
 const ICONS = ['🍽️','🚗','🏠','💊','📚','🎮','🛍️','🧾','💰','📈','📌','✈️','🐾','👶','🎁','⚽','☕','🔧','📱','💇','🏋️','🎓','🛠️','⛽'];
 const COLORS = ['#F59E0B','#22C55E','#EF4444','#3B82F6','#A855F7','#EC4899','#14B8A6','#F97316','#8B5CF6','#84CC16','#06B6D4','#F43F5E'];
 
 function uid(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+
+/* ---------- Perfis ---------- */
+function getProfiles(){
+  try{ return JSON.parse(localStorage.getItem(PROFILES_KEY)) || []; }catch(e){ return []; }
+}
+function saveProfiles(list){
+  localStorage.setItem(PROFILES_KEY, JSON.stringify(list));
+}
+function getActiveProfileId(){
+  return localStorage.getItem(ACTIVE_PROFILE_KEY);
+}
+function setActiveProfileId(id){
+  localStorage.setItem(ACTIVE_PROFILE_KEY, id);
+}
+function profileDbKey(id){
+  return 'financas_pessoal_v1__'+id;
+}
+function ensureProfilesInitialized(){
+  let profiles = getProfiles();
+  if(profiles.length===0){
+    // migração: se já existia dado no formato antigo (single-usuário), vira o 1º perfil
+    let migrated = null;
+    try{
+      const legacyRaw = localStorage.getItem(DB_KEY_LEGACY);
+      if(legacyRaw) migrated = JSON.parse(legacyRaw);
+    }catch(e){}
+    const id = uid();
+    const perfil = {id, nome:'Principal', cor:PROFILE_COLORS[0], criadoEm:Date.now()};
+    profiles = [perfil];
+    saveProfiles(profiles);
+    localStorage.setItem(profileDbKey(id), JSON.stringify(migrated || defaultData()));
+    setActiveProfileId(id);
+  } else if(!getActiveProfileId()){
+    setActiveProfileId(profiles[0].id);
+  }
+  return profiles;
+}
+function createProfile(nome){
+  const profiles = getProfiles();
+  const cor = PROFILE_COLORS[profiles.length % PROFILE_COLORS.length];
+  const perfil = {id:uid(), nome, cor, criadoEm:Date.now()};
+  profiles.push(perfil);
+  saveProfiles(profiles);
+  localStorage.setItem(profileDbKey(perfil.id), JSON.stringify(defaultData()));
+  return perfil;
+}
+function renameProfile(id, nome){
+  const profiles = getProfiles();
+  const p = profiles.find(x=>x.id===id);
+  if(p){ p.nome = nome; saveProfiles(profiles); }
+}
+function deleteProfile(id){
+  let profiles = getProfiles();
+  if(profiles.length<=1) return false;
+  profiles = profiles.filter(p=>p.id!==id);
+  saveProfiles(profiles);
+  localStorage.removeItem(profileDbKey(id));
+  if(getActiveProfileId()===id){ setActiveProfileId(profiles[0].id); }
+  return true;
+}
+function switchProfile(id){
+  setActiveProfileId(id);
+  location.reload();
+}
+function getActiveProfile(){
+  const id = getActiveProfileId();
+  return getProfiles().find(p=>p.id===id);
+}
 
 function defaultData(){
   const now = new Date();
@@ -320,6 +410,7 @@ function defaultData(){
     {nome:'Lazer', icone:'🎮', cor:'#EC4899'},
     {nome:'Compras', icone:'🛍️', cor:'#F97316'},
     {nome:'Contas e Serviços', icone:'🧾', cor:'#84CC16'},
+    {nome:'Dívidas', icone:'📉', cor:'#DC2626'},
     {nome:'Outros', icone:'📌', cor:'#8B5CF6'},
   ].map(c=>({id:uid(), tipo:'despesa', ...c}));
   const catIncome = [
@@ -338,15 +429,19 @@ function defaultData(){
     transactions:[],
     budgets:[],
     goals:[],
+    debts:[],
     settings:{ moeda:'BRL' }
   };
 }
 
 let DATA = null;
+let ACTIVE_DB_KEY = null;
 
 function loadData(){
+  ensureProfilesInitialized();
+  ACTIVE_DB_KEY = profileDbKey(getActiveProfileId());
   try{
-    const raw = localStorage.getItem(DB_KEY);
+    const raw = localStorage.getItem(ACTIVE_DB_KEY);
     if(raw){ DATA = JSON.parse(raw); }
     else { DATA = defaultData(); saveData(); }
   }catch(e){ DATA = defaultData(); }
@@ -354,10 +449,14 @@ function loadData(){
   if(!DATA.settings) DATA.settings = {moeda:'BRL'};
   if(!DATA.budgets) DATA.budgets = [];
   if(!DATA.goals) DATA.goals = [];
+  if(!DATA.debts) DATA.debts = [];
+  if(!DATA.categories.some(c=>c.tipo==='despesa' && c.nome==='Dívidas')){
+    DATA.categories.push({id:uid(), tipo:'despesa', nome:'Dívidas', icone:'📉', cor:'#DC2626'});
+  }
   return DATA;
 }
 function saveData(){
-  localStorage.setItem(DB_KEY, JSON.stringify(DATA));
+  localStorage.setItem(ACTIVE_DB_KEY, JSON.stringify(DATA));
 }
 
 /* ---------- Formatação ---------- */
@@ -504,6 +603,33 @@ function toast(msg, icon){
 
 function uuidShortId(){ return uid(); }
 
+/* ---------- Dívidas ---------- */
+function debtSaldoDevedor(d){
+  return Math.max(0, Number(d.valorTotal) - Number(d.valorPago||0));
+}
+function debtProgress(d){
+  const total = Number(d.valorTotal)||0;
+  if(total<=0) return 0;
+  return Math.min(100, (Number(d.valorPago||0)/total)*100);
+}
+function totalDividasAbertas(){
+  return DATA.debts.filter(d=>d.status!=='quitada').reduce((s,d)=>s+debtSaldoDevedor(d),0);
+}
+function nextDebtDueDate(d){
+  if(!d.diaVencimento) return null;
+  const hoje = new Date();
+  let venc = new Date(hoje.getFullYear(), hoje.getMonth(), Number(d.diaVencimento));
+  if(venc < new Date(hoje.getFullYear(),hoje.getMonth(),hoje.getDate())) venc.setMonth(venc.getMonth()+1);
+  return venc.toISOString().slice(0,10);
+}
+function upcomingDebts(days){
+  const today = new Date(); today.setHours(0,0,0,0);
+  const limit = new Date(today); limit.setDate(limit.getDate()+(days||30));
+  return DATA.debts.filter(d=>d.status==='ativa' && d.diaVencimento).map(d=>({debt:d, vencimento:nextDebtDueDate(d)}))
+    .filter(x=>{ const dt = new Date(x.vencimento+'T00:00:00'); return dt>=today && dt<=limit; })
+    .sort((a,b)=>a.vencimento.localeCompare(b.vencimento));
+}
+
 
 /* =========================================================
    SHELL — Sidebar, topo mobile, router
@@ -514,17 +640,19 @@ const NAV_ITEMS = [
   {id:'contas', label:'Contas', ic:'🏦'},
   {id:'orcamento', label:'Orçamento', ic:'🎯'},
   {id:'metas', label:'Metas', ic:'🏆'},
+  {id:'dividas', label:'Dívidas', ic:'📉'},
   {id:'recorrentes', label:'Recorrentes', ic:'🔁'},
   {id:'relatorios', label:'Relatórios', ic:'📈'},
   {id:'categorias', label:'Categorias', ic:'🏷️'},
   {id:'ajustes', label:'Ajustes', ic:'⚙️'},
 ];
-const BOTTOM_NAV = ['dashboard','transacoes','relatorios','ajustes'];
+const BOTTOM_NAV = ['dashboard','transacoes','dividas','ajustes'];
 
 let CURRENT_PAGE = 'dashboard';
 
 function buildShell(){
   const app = document.getElementById('app');
+  const perfil = getActiveProfile();
   app.innerHTML = `
     <aside class="sidebar">
       <div class="brand">
@@ -533,6 +661,14 @@ function buildShell(){
           <div class="display">FINANÇAS</div>
           <span>Painel Pessoal</span>
         </div>
+      </div>
+      <div class="profile-switch" onclick="openProfileModal()">
+        <div class="profile-avatar" style="background:${perfil?perfil.cor:'#F59E0B'}">${perfil?perfil.nome.charAt(0).toUpperCase():'?'}</div>
+        <div style="flex:1; min-width:0;">
+          <div class="profile-name">${perfil?escapeHTML(perfil.nome):'Perfil'}</div>
+          <div class="profile-hint">Trocar perfil</div>
+        </div>
+        <span style="color:var(--ink-faint);">▾</span>
       </div>
       <nav class="nav" id="navList"></nav>
       <div class="sidebar-foot">
@@ -546,8 +682,8 @@ function buildShell(){
 
     <div style="flex:1; min-width:0; display:flex; flex-direction:column;">
       <div class="topbar">
-        <div style="display:flex; align-items:center; gap:9px;">
-          <div class="brand-mark" style="width:28px;height:28px;font-size:13px;">R$</div>
+        <div style="display:flex; align-items:center; gap:9px;" onclick="openProfileModal()">
+          <div class="profile-avatar" style="width:28px;height:28px;font-size:12px;background:${perfil?perfil.cor:'#F59E0B'}">${perfil?perfil.nome.charAt(0).toUpperCase():'?'}</div>
           <div class="display" style="font-size:17px;" id="topbarTitle">PAINEL</div>
         </div>
         <div class="saldo-mini" style="padding:6px 10px;">
@@ -611,6 +747,7 @@ function renderPage(page){
     case 'contas': main.innerHTML = renderContas(); break;
     case 'orcamento': main.innerHTML = renderOrcamento(); break;
     case 'metas': main.innerHTML = renderMetas(); break;
+    case 'dividas': main.innerHTML = renderDividas(); break;
     case 'recorrentes': main.innerHTML = renderRecorrentes(); break;
     case 'relatorios': main.innerHTML = renderRelatorios(); afterRenderRelatorios(); break;
     case 'categorias': main.innerHTML = renderCategorias(); break;
@@ -711,6 +848,22 @@ function renderDashboard(){
         <div class="card-title">Próximos vencimentos</div>
         ${upcoming.length ? upcoming.map(b=>billRowHTML(b)).join('') : `<div class="empty"><div class="ic">🎉</div><div class="t">Nada vencendo em 30 dias</div></div>`}
       </div>
+    </div>
+    ${debtSummaryCardHTML()}
+  `;
+}
+
+function debtSummaryCardHTML(){
+  const ativas = DATA.debts.filter(d=>d.status!=='quitada');
+  if(!ativas.length) return '';
+  const total = totalDividasAbertas();
+  return `
+    <div class="card" style="margin-top:16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; border-color:rgba(220,38,38,.3);">
+      <div>
+        <div class="card-title" style="margin-bottom:4px;">📉 Dívidas em aberto</div>
+        <div style="font-size:12px; color:var(--ink-faint);">${ativas.length} dívida${ativas.length===1?'':'s'} ativa${ativas.length===1?'':'s'} · <a href="#" onclick="goTo('dividas');return false;" style="color:var(--amber); font-weight:600;">ver detalhes →</a></div>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace; font-size:22px; font-weight:700; color:var(--red)">${fmtBRL(total)}</div>
     </div>
   `;
 }
@@ -1429,6 +1582,13 @@ function renderAjustes(){
     <div class="page-head"><div><h1>Ajustes</h1><div class="sub">Backup, dados e preferências</div></div></div>
     <div class="card" style="margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
       <div>
+        <div class="card-title" style="margin-bottom:4px;">Perfis</div>
+        <div style="font-size:12px; color:var(--ink-dim);">Perfil atual: <strong style="color:var(--ink)">${getActiveProfile()?escapeHTML(getActiveProfile().nome):''}</strong> · dados separados por pessoa neste aparelho</div>
+      </div>
+      <button class="btn btn-ghost" onclick="openProfileModal()">👤 Gerenciar perfis</button>
+    </div>
+    <div class="card" style="margin-bottom:16px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;">
+      <div>
         <div class="card-title" style="margin-bottom:4px;">Instalar como app</div>
         <div style="font-size:12px; color:var(--ink-dim);">Adicione à tela inicial do celular para abrir como um app, com ícone próprio e offline.</div>
       </div>
@@ -2047,147 +2207,3 @@ function parseCSV(text){
 function guessColumns(header){
   const norm = header.map(h=>h.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''));
   const find = (...keys) => norm.findIndex(h=>keys.some(k=>h.includes(k)));
-  return {
-    data: find('data','date'),
-    desc: find('descr','histor','memo','titulo'),
-    valor: find('valor','amount','montante')
-  };
-}
-
-function parseValorBR(raw){
-  if(raw==null) return NaN;
-  let s = String(raw).trim().replace(/[R$\s]/g,'');
-  // se tem vírgula como separador decimal
-  if(s.includes(',') && s.includes('.')){
-    s = s.replace(/\./g,'').replace(',','.');
-  } else if(s.includes(',')){
-    s = s.replace(',','.');
-  }
-  return parseFloat(s);
-}
-function parseDataBR(raw){
-  if(!raw) return null;
-  const s = raw.trim();
-  // já ISO
-  if(/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
-  // dd/mm/aaaa ou dd-mm-aaaa
-  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})/);
-  if(m){
-    let [,d,mo,y] = m;
-    if(y.length===2) y = '20'+y;
-    return `${y}-${mo.padStart(2,'0')}-${d.padStart(2,'0')}`;
-  }
-  return null;
-}
-
-function handleImportFile(ev){
-  const file = ev.target.files[0];
-  if(!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    const text = e.target.result;
-    const rows = parseCSV(text);
-    if(rows.length<2){ toast('Arquivo vazio ou inválido','⚠️'); return; }
-    const header = rows[0];
-    const cols = guessColumns(header);
-    if(cols.data<0 || cols.desc<0 || cols.valor<0){
-      document.getElementById('importPreviewWrap').innerHTML = `<div class="empty"><div class="ic">⚠️</div><div class="t">Não consegui identificar as colunas</div><div class="s">Verifique se o CSV tem colunas de data, descrição e valor</div></div>`;
-      return;
-    }
-    const parsed = rows.slice(1).map(r=>{
-      const data = parseDataBR(r[cols.data]);
-      const desc = r[cols.desc]||'(sem descrição)';
-      const valor = parseValorBR(r[cols.valor]);
-      return {data, desc, valor};
-    }).filter(r=>r.data && !isNaN(r.valor) && r.valor!==0);
-
-    IMPORT_ROWS = parsed;
-    renderImportPreview();
-  };
-  reader.readAsText(file, 'ISO-8859-1');
-}
-
-function renderImportPreview(){
-  const wrap = document.getElementById('importPreviewWrap');
-  const btn = document.getElementById('importConfirmBtn');
-  if(!IMPORT_ROWS.length){
-    wrap.innerHTML = `<div class="empty"><div class="ic">📭</div><div class="t">Nenhum lançamento reconhecido</div></div>`;
-    btn.disabled = true;
-    return;
-  }
-  const receitas = IMPORT_ROWS.filter(r=>r.valor>0).length;
-  const despesas = IMPORT_ROWS.filter(r=>r.valor<0).length;
-  wrap.innerHTML = `
-    <div class="card" style="background:var(--graphite-3); margin:10px 0;">
-      <div style="font-size:12.5px; color:var(--ink-dim); margin-bottom:8px;"><strong>${IMPORT_ROWS.length}</strong> lançamentos encontrados — ${receitas} receita(s), ${despesas} despesa(s)</div>
-      <div style="max-height:220px; overflow-y:auto;">
-        ${IMPORT_ROWS.slice(0,50).map(r=>`
-          <div style="display:flex; justify-content:space-between; gap:8px; padding:5px 0; border-bottom:1px solid var(--graphite-4); font-size:11.5px;">
-            <span style="color:var(--ink-faint); flex-shrink:0;">${fmtDate(r.data)}</span>
-            <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHTML(r.desc)}</span>
-            <span style="font-family:'JetBrains Mono',monospace; color:${r.valor>=0?'var(--green)':'var(--red)'}; flex-shrink:0;">${fmtBRL(r.valor)}</span>
-          </div>
-        `).join('')}
-      </div>
-      ${IMPORT_ROWS.length>50?`<div style="font-size:11px; color:var(--ink-faint); margin-top:6px;">mostrando 50 de ${IMPORT_ROWS.length}</div>`:''}
-    </div>
-  `;
-  btn.disabled = false;
-}
-
-function confirmImport(){
-  const contaId = document.getElementById('importConta').value;
-  if(!contaId || !IMPORT_ROWS.length) return;
-  const catDespesaPadrao = DATA.categories.find(c=>c.tipo==='despesa' && c.nome==='Outros') || DATA.categories.find(c=>c.tipo==='despesa');
-  const catReceitaPadrao = DATA.categories.find(c=>c.tipo==='receita' && c.nome==='Outros') || DATA.categories.find(c=>c.tipo==='receita');
-  let count = 0;
-  IMPORT_ROWS.forEach(r=>{
-    const isIncome = r.valor>0;
-    DATA.transactions.push({
-      id: uid(), descricao: r.desc, valor: Math.abs(r.valor), data: r.data,
-      tipo: isIncome?'receita':'despesa',
-      categoriaId: isIncome ? (catReceitaPadrao?catReceitaPadrao.id:'') : (catDespesaPadrao?catDespesaPadrao.id:''),
-      contaId, status:'pago', recorrente:false, frequencia:null, criadoEm:Date.now()
-    });
-    count++;
-  });
-  saveData();
-  closeModal();
-  toast(`${count} lançamentos importados`,'✅');
-  renderPage(CURRENT_PAGE);
-}
-
-
-
-/* =========================================================
-   PWA — Service Worker + prompt de instalação
-   ========================================================= */
-let DEFERRED_INSTALL_PROMPT = null;
-
-if('serviceWorker' in navigator && location.protocol!=='file:'){
-  window.addEventListener('load', ()=>{
-    navigator.serviceWorker.register('sw.js').catch(()=>{ /* silencioso: funciona normalmente sem SW */ });
-  });
-}
-
-window.addEventListener('beforeinstallprompt', (e)=>{
-  e.preventDefault();
-  DEFERRED_INSTALL_PROMPT = e;
-  const btn = document.getElementById('pwaInstallBtn');
-  if(btn) btn.style.display = '';
-});
-
-function triggerInstallPrompt(){
-  if(!DEFERRED_INSTALL_PROMPT){
-    toast('Use o menu do navegador → "Adicionar à tela inicial"','📲');
-    return;
-  }
-  DEFERRED_INSTALL_PROMPT.prompt();
-  DEFERRED_INSTALL_PROMPT.userChoice.finally(()=>{ DEFERRED_INSTALL_PROMPT = null; });
-}
-
-
-
-</script>
-</body>
-</html>
